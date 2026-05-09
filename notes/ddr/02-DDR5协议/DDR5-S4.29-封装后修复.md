@@ -1,0 +1,35 @@
+# 4.29 封装后修复 (Post Package Repair, PPR)
+
+> **协议原文**: JESD79-5D v1.41, Section 4.29 (Page 253-258)
+
+---
+
+## 4.29.0 芯片出厂后还能"修复"
+
+DRAM 出厂测试时会用冗余行替换掉绝大部分缺陷行。但有些缺陷在封装后才出现——高温老化让边际行失效、宇宙射线引起永久性单元损坏。DDR5 的 PPR 机制允许系统在**封装后的芯片上**修复这些新缺陷——不需要返厂。
+
+---
+
+## 4.29.1 hPPR：永久修复
+
+Hard PPR 使用**电熔丝（eFuse）**将坏行永久映射到冗余行。修复是不可逆的——断电后依然保留。需要先写 **MR24（PPR Guard Key）** 的值来解锁（防止误触发导致不可逆的 eFuse 熔断）。通过 **MR54~MR57** 查询可用的 hPPR 资源（剩余冗余行数）。
+
+---
+
+## 4.29.2 sPPR：临时修复
+
+Soft PPR 不熔断 eFuse——只修改当前上电周期的地址映射逻辑。断电即失效，但速度快。支持 **Undo**（撤销修复——如果误判了坏行）和 **Lock**（锁定——防止意外撤销）。流程：sPPR Repair（告知坏行地址）→ 映射到冗余行 → sPPR Lock → 读验证 → 可选 Undo。
+
+---
+
+## 4.29.3 PRAC：预防优于修复
+
+PRAC（Per Row Activation Counting）是配合 PPR 的行锤击防护。DRAM 内部统计每行的 ACT 激活次数。超过 BAT（Bank Activation Threshold）阈值时，Controller 决定触发 sPPR 修复还是增加 RFM 刷新。
+
+> **表 1**: Table 348 — SDRAM Fault Handling (JESD79-5D Page 467)
+> **表 2**: Table 349 — PRAC sPPR Timing (JESD79-5D Page 469)
+
+---
+
+**协议原文**: JESD79-5D Section 4.29 (Page 253-258)
+**关联笔记**: [DDR5-S4.30-MBIST]

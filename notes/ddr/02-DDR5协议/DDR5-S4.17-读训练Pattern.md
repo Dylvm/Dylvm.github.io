@@ -1,0 +1,37 @@
+# 4.17 读训练 Pattern (Read Training Pattern)
+
+> **协议原文**: JESD79-5D v1.41, Section 4.17 (Page 200-208)
+
+---
+
+## 4.17.0 训练需要"已知的答案"
+
+在前面几节中，我们讨论了 CS 训练、CA 训练和 Write Leveling——它们解决的都是"信号的时序对齐"问题，依靠的是硬件 Loopback 机制（DRAM 直接用 DQ 反馈 CA/CS 的采样值）。但当训练进入读侧——Read Leveling、Read DQ-DQS Deskew、VrefDQ 优化——情况变了：Controller 需要从 DRAM 读取数据，用读到的数据去判断时序是否正确。
+
+但读什么数据呢？如果读的是普通存储阵列中的数据，Controller 不知道"正确值"是什么——没法判断读到的数据是对是错。所以训练需要一种**预先已知的数据**。DDR5 通过在 Mode Register 中**可编程存储训练 Pattern**来解决这个问题。
+
+MR25~MR31 这七个寄存器构成了一个可编程的 Pattern 生成器。Controller 提前把一段已知的数据写入这些 MR（例如 128-bit 的 Walking-1 序列或伪随机码），然后在训练时发 MPR（Multi-Purpose Register）READ 命令——DRAM 不读取存储阵列，而是**直接从这些 MR 中取出 Pattern 输出到 DQ**。因为 Controller 知道这段 Pattern 的每一位是什么，它就能精确判断"DRAM 输出的数据是否和我预期的一致"。
+
+---
+
+## 4.17.1 两种 Pattern：固定 Pattern 和 LFSR 伪随机
+
+**固定 Pattern** 存储在 MR26（Read Pattern Data0）和 MR27（Read Pattern Data1）中——共 128-bit，正好填满 BL16 的一个 Burst。MR28 和 MR29 提供了每 DQ bit 的反转控制：MR28 OP[7:0] 分别对应 DQL[7:0]（Lower Byte 的 8 根 DQ），MR29 对应 DQU[7:0]（Upper Byte）。反转允许 Controller 生成"互补 Pattern"——同一段 Pattern 的正反两个版本——这对分析 DBI 行为和找到不对称的眼图裕量很有用。
+
+**LFSR 伪随机 Pattern** 通过 MR30 配置。LFSR（Linear Feedback Shift Register）可以产生长周期的伪随机序列——不像固定 128-bit Pattern 那样只有 16 Bytes。伪随机序列的主要用途是 **BER（误码率）压力测试**——长时间读取随机 Pattern 来统计误码数量，验证眼图在真实随机数据下的裕量。
+
+MR25 是"总开关"——配置训练模式（Pattern 来源：固定还是 LFSR）、Burst 长度等。
+
+---
+
+## 4.17.2 MPR READ 在训练中的角色
+
+MPR READ 和普通 READ 的关键区别在于数据来源：普通 READ 读的是存储阵列中的实际数据（经过 ACT→SA→Column Decoder→SERDES），MPR READ 的数据直接从 MR25~MR31 的 Pattern 寄存器输出——完全跳过存储阵列。这意味着 MPR READ 可以在**Bank 都没有 ACT 的情况下使用**——不需要先打开一行。这在训练初期特别有用——此时 Controller 可能还没有完成所有 MR 配置，但 Pattern 已经写入了，就可以开始读侧训练了。
+
+> **表 1**: Table 94 — MR25 Read Training Mode Settings (JESD79-5D Page 200)
+> **图 1**: Figure 86-89 — Read Training Pattern Examples (JESD79-5D Page 204-207)
+
+---
+
+**协议原文**: JESD79-5D Section 4.17 (Page 200-208)
+**关联笔记**: [DDR5-S4.28-VrefDQ校准规范] | [DDR5-S4.18-读前导训练] | [DDR5-训练流程]

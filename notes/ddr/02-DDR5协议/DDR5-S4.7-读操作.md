@@ -1,0 +1,251 @@
+# 4.7 读操作 (Read Operation)
+
+> **协议原文**: JESD79-5D v1.41, Section 4.7 (Page 135-145)
+> **阅读前提**: [DDR5-S4.1-命令真值表]（RD 命令的 CA 编码）、[DDR5-S4.2-突发长度]（BL16/BC8/BL32 的含义与 Burst Order）、[DDR5-S4.4-可编程前导后导]（DQS Preamble/Postamble 的可编程配置）。
+
+---
+
+## 4.7.0 从一个问题开始：READ 命令发出后，数据什么时候到？
+
+假设你已经用 ACT 命令打开了 Bank 0 的第 1000 行，Sense Amplifier 中锁存着这一整行的数据。现在你发出一个 RD 命令，指定要读第 50 列——那么问题来了：**第一个数据 bit 要等多久才会出现在 DQ 引脚上？**
+
+答案由 **Read Latency（RL）** 给出。RL 的正式定义是：从 Read 命令的最后一个周期算起，到 DQS 总线上出现第一个有效的数据采样沿（这个沿不包含 Preamble 的翻转部分）。RL 的值等于 **CAS Latency（CL）** 加上 Additive Latency（AL，通常为 0），所以实际上 **RL = CL**，单位是 tCK（时钟周期）。以 DDR5-4800 为例，CL 通常配置为 34 tCK——这意味着从 RD 命令发完到第一个数据 bit 出现在 DQ 上，需要等大约 34 × 0.416 ns ≈ 14.1 ns。
+
+在这 14.1 ns 的"等待期"里，DRAM 内部在做什么？Column Decoder 正在把第 50 列对应的 Sense Amplifier 输出选通到数据总线，数据经过 I/O 缓冲器，并通过并转串逻辑（SERDES）从内部 128-bit 宽的数据通路转换为 DQ 上 8-bit 宽、16 拍的串行 Burst。与此同时，DQS 信号在数据出现之前，先输出一段 **Preamble（前导）**——这是一个提前开始的翻转序列，目的是告诉 Controller 的 PHY："数据马上要来了，请准备接收"。
+
+读操作的整个过程——从 RD 命令到数据输出完毕——可以画成一张时间线图。协议中 Figure 35 就是这张图。让我们从这张图开始，一步步理解读 Burst 的完整时序。
+
+---
+
+## 4.7.1 读 Burst 的基本时序：从 RD 命令到最后一个数据拍
+
+Figure 35 展示了一个 **BL16 模式**（默认模式，一次 Burst 输出 16 个数据拍）的读操作时序。这张图的横轴是 CK 时钟周期（标注为 t0, t1, t2, ...），纵轴上有四条信号线：CK 差分时钟、CA 总线上的命令、DQS 差分 Strobe、DQ 数据总线。
+
+### 4.7.1.1 BL16 模式的时间线走读
+
+让我们沿着时间线从左到右走一遍：
+
+**T0 时刻：RD 命令的第 1 个 CK 周期**。CS_n 被拉低，CA 总线承载 RD 命令的编码——包括目标 Bank Group、Bank、起始列地址。DRAM 的 CA 采样器在 CK 上升沿锁存这些信息，命令解码器识别出"这是一条读命令"。
+
+**T1 时刻：RD 命令的第 2 个 CK 周期**。CS_n 拉高，CA 总线承载 RD 命令的第二段信息（列地址高位、Burst Length 选择位 BL\*、Auto-Precharge 位 AP 等）。从这一刻起，**Read Latency 的计时开始**——RL = CL 个 tCK 后，第一个数据拍必须出现在 DQ 上。
+
+**从 T2 到 Ta+RL-1（等待期）**。这段时间 CA 总线上是 DES 命令，但实际上 DRAM 内部正在紧张地工作——Column Decoder 选通、I/O 缓冲器打开、SERDES 准备好输出。针对 DES 的"其他命令也可以发"这一点（Note 2）：图中画 DES 只是为了让波形图整洁，在实际系统中，这些 CK 周期完全可以向其他 Bank 发出 ACT、RD、WR 等命令——DRAM 的流水线设计使得不同 Bank 的操作可以重叠进行。
+
+**Ta+RL 时刻：DQS 开始输出 Preamble**。DQS 总线上出现了 DQS Preamble 的第一个翻转沿。对于 Figure 35 的配置，Preamble = 2tCK "0010" Pattern——DQS 先保持 1 个 tCK 的低电平，然后在第二个 tCK 做一次上升沿翻转。这个"0010"序列就是告诉 Controller PHY："请注意，数据将在 tRPRE 时间后到达"。
+
+**T0+RL 时刻：第一个数据 bit D0 出现**。在 DQS 上升沿的同时（边沿对齐），DQ[15:0] 上出现了第一个数据拍 D0。从此开始，DQS 每半个 CK 周期翻转一次（上升沿或下降沿），DQ 上依次出现 D1, D2, D3, ...，直到 D15——总共 16 个数据拍在 8 个 CK 周期内完成。
+
+**Tb=1 时刻：最后一个数据拍 D15 输出**。D15 之后，DQS 进入 **Postamble（后导）** 阶段——再做一次翻转（0.5tCK 或 1.5tCK，取决于 MR8 配置），然后回到静态电平。DQ 总线在 Postamble 结束后回到高阻态（RTT_PARK）。
+
+**Figure 35 的配置参数**（协议原文 Notes 1-3）：
+- BL=16, Preamble = 2tCK "0010" Pattern, Postamble = 1.5tCK
+- Read DQS Offset Timing 在此例中设为 **0 Clock**——DQS 从 RL 时刻准时开始翻转，不提前不推后
+- CK 和 DQS 在图中被画成"边沿对齐"的，这只是为了图示清晰——实际系统中 CK 和 DQS 之间存在由 tDQSCK 参数定义的偏移
+
+### 4.7.1.2 BC8 模式：只读一半
+
+**BC8（Burst Chop 8）** 就是从一个 BL16 Burst 中"砍掉"后 8 个数据拍——只输出前 8 拍或后 8 拍。协议中 Figure 36 展示了 BC8 的时序。
+
+与 BL16 相比，BC8 有两个关键区别。**第一**，DQS 在 BC8 的 8 个数据拍（4 个 CK 周期）完成后立即停止翻转并进入 Postamble——后面不会再有 D9~D15。在非 CRC 模式下，DQS 在 Postamble 之后完全静止。**第二**，DQ 总线上未使用的 8 个拍不被驱动——输出驱动器置于 RTT_PARK（高阻态），总线上只有噪声而没有有效信号。
+
+BC8 省的是**接口带宽和功耗**，但它**不省内部操作时间**。DRAM 内部仍然按 16n Prefetch 从阵列中取出了 128-bit 数据——后 64-bit 只是被丢弃了，没有被串行化输出。这也意味着 BC8 的 tRTP（Read-to-Precharge）约束和 BL16 一样——因为内部操作并没有因为 BC8 而变快。
+
+BC8 的使用场景很明确：当 Controller 只需要 8 Bytes 的数据（比如一个 Cache Line 的一半），用 BC8 可以节省 4 个 CK 周期的总线占用时间，让其他 Bank 的命令更早得到执行。
+
+### 4.7.1.3 跨 Rank 读与 Read DQS Offset
+
+在 DDR5 的信号完整性设计中，有一个微妙但重要的概念：**Read DQS Offset Timing**（通过 MR40 OP[2:0] 可编程）。Figure 37 用两张对比图解释了它的作用。
+
+Figure 37 的场景是两个 Rank 交错读——Rank 0 刚读了一笔数据，紧接着 Rank 1 也开始读。上方的图是 Read DQS Offset = 0 Clock 时的波形（"Matched"）；下方的图是 Read DQS Offset = 1 Clock 时的波形（"Unmatched"）。
+
+**Offset = 0 时的波形**：Rank 0 的 DQS 在 RL 时刻准时开始输出 Preamble，经过 BL16 数据拍、Postamble 后，Rank 0 的 DQS 驱动停止，终端切换到 RTT_PARK。在这之后，Rank 1 的 DQS Preamble 才开始——两条 DQS 之间没有交叠，RTT 的切换（RTT_NOM_RD ↔ RTT_PARK）也完全对齐。
+
+**Offset = 1 Clock 时的波形**：变化非常有趣。Rank 0 的 DQS **提前了 1 个 Clock** 开始翻转（因为 MR40 告诉 DRAM"把 DQS 提前 1 tCK 输出"）。但请注意 Figure 37 下方 Note 4 的原文："In both cases, the Data does not move"——**数据没有动**。第一个有效数据采样沿仍然在准确的 RL 时刻出现，D0~D15 的时序完全不变。DQS 提前的效果仅仅是：**Preamble 被拉长了 1 tCK**——DQS 更早开始"热身"，但"真正干活"的时刻（第一个数据采样沿）没变。
+
+这种设计有什么用？如果你的 Controller PHY 需要更长的 DQS Preamble 来锁定相位（比如用了设计比较保守的 CDR 电路），你可以把 Read DQS Offset 设为非零值来提前启动 DQS，而不影响数据本身的时间位置。代价是 DQS 总线的占用时间更长（Preamble 多占了 1 tCK），在有另一个 Rank 紧跟着读的情况下，Rank 0 的 DQS Postamble 会和 Rank 1 的 DQS Preamble 产生短暂交叠——Controller 需要通过在 MR40 中为不同 Rank 设置不同的 Offset 来区分。
+
+> **图 1**: Figure 35 — READ Burst Operation (BL16) (JESD79-5D Page 135)
+> **图 2**: Figure 36 — Read Burst Operation (BC8) (JESD79-5D Page 135)
+> **图 3**: Figure 37 — READ to READ, Different Ranks Operation with Read DQS Offset Usage (JESD79-5D Page 136)
+
+---
+
+## 4.7.2 读完数据之后：Precharge 的时机
+
+前面我们讲了 RD 命令之后数据怎么出来——但一次完整的读访问还没有结束。读完数据后，你还需要关闭这一行（发 PRE 命令），让 Bank 回到 IDLE 状态，为下一次 ACT 做好准备。那么问题又来了：**RD 命令之后多久才能发 PRE？**
+
+答案由 **tRTP**（Read to Precharge）规定。tRTP 是"内部读命令到预充电命令的延迟"——从 RD 命令发出，到 DRAM 内部可以安全执行 Precharge 的最短时间。
+
+但 tRTP 不是唯一的约束。实际上，RD → PRE 必须同时满足四条时序链：
+
+1. **tRTP**：从 RD 命令到 PRE 命令 ≥ tRTP。这是最直接的约束。tRTP 确保最后的数据拍已经传输完毕，SA 中的数据也已经稳定。
+2. **tRAS**：从 ACT 命令到 PRE 命令 ≥ tRAS。tRAS 确保 SA 中的数据已经完成回写（Restore）到存储电容。如果你 RD 发得特别早（tRCD 之后立刻 RD），那 tRAS 很可能成为瓶颈——数据虽然读出来了，但 SA 回写还没完成，这时 PRE 会破坏数据。
+3. **tRP**：PRE 命令到下一个 ACT 命令 ≥ tRP。Bit Line 需要时间均衡到 Vref。
+4. **tRC**：同 Bank 的上一次 ACT 到下一次 ACT ≥ tRC（= tRAS + tRP）。这是 Bank 的完整循环周期。
+
+### 4.7.2.1 1tCK Preamble 和 2tCK Preamble 下的 READ→PRE
+
+协议中 Figure 38 展示了 1tCK Preamble 的情况，Figure 39 展示了 2tCK Preamble 的情况。两者的区别在于：Preamble 长度不同，DQS 开始翻转的时间不同，但数据相对于 RD 命令的位置（RL）不变。所以 Preamble 长度不会改变 tRTP 的值——tRTP 是从 RD 命令算起的，跟 Preamble 多长没关系。
+
+Figure 39 还有一个值得注意的地方：它同时对比了 BL16 和 BC8 两种操作。上方的 DQS 波形对应 BL16（完整的 16 拍），下方的 DQS 波形对应 BC8（只有 8 拍）。在 BC8 中，DQS 停止得更早——Postamble 提前了 4 个 CK 周期。但再次强调：tRTP 不变，因为内部操作（16n Prefetch + Sense + Restore）并没有因为 BC8 少输出了 8 个拍而变快。
+
+### 4.7.2.2 Auto-Precharge：让 PRE 自动发生
+
+如果你用的是 **RDA（Read with Auto-Precharge）** 命令而不是 RD 命令，那就**不需要单独发 PRE**——DRAM 内部会在数据输出完成后自动执行 Precharge。但时序约束和手动 PRE 一样：Auto-Precharge 也要等待 tRAS 满足（通过 RAS Lockout Circuit 内部延迟），也要满足 tRP。在 Figure 38 和 39 的例子中，协议 Note 3 假设在 PRE 命令发出的时刻（ta+1），tRAS.MIN 已经满足，且下一次 ACT 的时刻（tc+2）tRC.MIN 已经满足——这只是一个例子，实际数值取决于具体的 Speed Bin。
+
+> **图 4**: Figure 38 — READ to PRECHARGE with 1tCK Preamble (JESD79-5D Page 137)
+> **图 5**: Figure 39 — READ to PRECHARGE with 2tCK Preamble (JESD79-5D Page 137)
+
+---
+
+## 4.7.3 一个绕不开的 PHY 层问题：DQS 沿到底在 CK 沿的什么位置？
+
+前面我们一直在说"RL 个 tCK 之后 DQS 开始翻转"——这隐含了一个假设：CK 和 DQS 的相位关系是精确已知的。但在实际的物理系统中，**CK 和 DQS 之间存在偏移**。这个偏移由 **tDQSCK** 参数量化。
+
+### 4.7.3.1 tDQSCK：DQS 沿的"窗框"
+
+tDQSCK 定义的是：DQS_t/DQS_c 的上升沿相对于 CK_t/CK_c 上升沿的时间偏移。它不是一个固定值，而是一个**对称的允许范围** [MIN, MAX]。以 DDR5-4800 为例，tDQSCK 的范围是 **-0.300 tCK 到 +0.300 tCK**。负值表示 DQS 沿出现在 CK 沿之前（提前），正值表示出现在之后（滞后）。
+
+不同的 Speed Bin 有不同的 tDQSCK 范围（Tables 41-43）：
+
+| Speed Bin | tDQSCK (MIN ~ MAX, tCK) | tDQSCKi (MAX, tCK) |
+|-----------|------------------------|-------------------|
+| DDR5-4800 | -0.300 ~ +0.300 | 0.490 |
+| DDR5-5600 | -0.325 ~ +0.325 | 0.530 |
+| DDR5-6400 | -0.348 ~ +0.348 | 0.567 |
+| DDR5-8000 | -0.390 ~ +0.390 | 0.635 |
+
+为什么这个范围是"对称"的？因为 DQS 可能会提早，也可能会推迟——取决于具体的 DRAM 芯片、温度、电压。Controller PHY 的 DQS 接收电路必须能在这个范围内正确锁定 DQS 的相位。
+
+### 4.7.3.2 tDQSCKi：单个芯片内部 DQS 沿的散布
+
+如果我们拿一颗具体的 DRAM 芯片来看，它的 DQS 所有上升沿并不是整齐划一地落在同一个时间点——而是散布在一个更小的窗口内。这个窗口就是 **tDQSCKi**。tDQSCKi 衡量的是**单个 DRAM 芯片内部**，不同 DQS 沿之间的抖动和偏移（芯片与芯片之间的差异被排除了——见 Note 2）。
+
+理解 tDQSCKi 的一种直观方式是"窗中之窗"：tDQSCK 是一个大窗框（所有芯片的所有 DQS 沿必须落在里面），tDQSCKi 是窗框内部每个芯片自己的小窗口（这个芯片内部所有 DQS 沿的散布范围）。每个小窗口必须完全位于大窗框之内。Figure 40 用一张示意图把这个关系画得很清楚——每个"Rising Strobe Variance"窗口对应一组 DQS 沿，多个这样的窗口散布在 tDQSCK min 和 tDQSCK max 之间。
+
+### 4.7.3.3 这对 Controller 意味着什么？
+
+Controller PHY 在 Read Leveling 训练中需要找到 DQS Gate 的最佳开启时刻。tDQSCK 的范围告诉 Controller：DQS 最早可能提前 0.3 tCK 到达，最晚可能滞后 0.3 tCK 到达。tDQSCKi 的值告诉 Controller：一旦你锁定了一颗特定 DRAM 的 DQS 相位，它内部的沿散布不会超过这个窗口。这两个参数共同决定了 Read Leveling 训练后 DQS Gate 的安全窗口宽度。
+
+> **表 1**: Table 41 — CLK to Read DQS Timing Parameters DDR5-3200 to DDR5-4800 (JESD79-5D Page 138)
+> **表 2**: Table 42 — CLK to Read DQS Timing Parameters DDR5-5200 to DDR5-6800 (JESD79-5D Page 138)
+> **表 3**: Table 43 — CLK to Read DQS Timing Parameters DDR5-7200 to DDR5-9200 (JESD79-5D Page 138)
+> **图 6**: Figure 40 — tDQSCK Timing Definition (JESD79-5D Page 139)
+
+---
+
+## 4.7.4 当一次读不够：BL32 模式下如何读 32 个数据拍
+
+我们之前在 4.7.1 中讨论的 BL16 模式下，一次 RD 命令触发一次 16n Prefetch，输出 16 个数据拍。这对于 x8 器件（总数据量 = 16 × 8b = 128b）是完美的——一次 Prefetch 喂饱一次 Burst。
+
+但对于 **x4 器件**，BL16 × 4b = 64b——只有 x8 的一半。为了让 x4 器件也能达到同样的吞吐量，DDR5 为 x4 器件提供了可选的 **BL32 模式**：一次 Burst 输出 32 个数据拍（16 个 CK 周期），总数据量 = 32 × 4b = 128b，与 x8 的 BL16 相等。
+
+但 16n Prefetch 一次只产出 128-bit（16n × 8b = 128b 用于 x8；对于 x4 只有 64b）。BL32 需要 256-bit 的数据（32×4b×2）。这就需要 **两次 Prefetch**。第二次 Prefetch 由一条特殊的 **Dummy RD 命令**触发。
+
+### 4.7.4.1 Dummy RD 的工作原理
+
+Dummy RD 在第一条 RD 命令**恰好 8 个 CK 周期之后**发出——这个 8 tCK 的间隔等于 BL16 的一半（= 第一次 Prefetch 的数据量在接口上的传输时间）。它告诉 DRAM："前 16 个拍的数据已经在传输中了，现在请开始第二次 Prefetch，把后 16 个拍准备好"。
+
+Dummy RD 不是一条完全独立的命令——它的 CA 编码中，除了 **C10** 和 **AP** 这两根线之外，其余所有位的值与第一条 RD 命令完全相同（Note 6）。**C10 必须与第一条 RD 的 C10 相反**——因为 C10 是 BL32 Burst Order 中的最高位列地址位（决定了 Burst 起始于前半还是后半的 128-bit 块）。
+
+如果系统中有 Non-Target Rank，Controller 还需要在发 Dummy RD 的同时向非目标 Rank 发一条 **Dummy ODT 命令**——确保非目标 Rank 在整个 BL32 传输期间保持正确的 ODT 终端（Note 3-4）。协议 Figure 41 中用 CS0_n（目标 Rank）和 CS1_n（非目标 Rank）分别画出了这两条命令。
+
+### 4.7.4.2 BL16 in BL32 OTF：当不需要 32 拍的时候
+
+如果 MR0 虽然配置为 BL32 OTF（On The Fly），但 Controller 通过命令中的 BL\*=L 选择了 BL16 操作——那就不需要 Dummy RD。第一轮 16n Prefetch 已经产出了足够的 128-bit 数据（x4 器件的 BL16 只需要 64-bit，但内部仍取 128-bit，多出的部分被丢弃）。Figure 42 描绘了这种情况：只有一条 RD 命令，没有 Dummy。
+
+### 4.7.4.3 BL32 的 Auto-Precharge
+
+当 BL32 使用了 Auto-Precharge（Figure 45-46），AP 位需要被设为 H（对第一条 RD）和 L（对 Dummy RD）——第一条 RD 的 AP=H 表示"不要在这条命令后自动 PRE"，Dummy RD 的 AP=L 表示"这是最后的命令，数据传完后可以 PRE 了"。注意这里 AP 的逻辑和普通 BL16 的 Auto-Precharge 正好相反：在 BL16 中，AP=L 是"使能 Auto-Precharge"；在 BL32 中，第一条 RD 的 AP=H 是为了**取消** Auto-Precharge（因为数据还没传完），只有 Dummy RD 才真正触发。
+
+> **图 7**: Figure 41 — Read Timing for fixed BL32 and BL32 in BL32 OTF Mode (JESD79-5D Page 140)
+> **图 8**: Figure 42 — Read Timings for BL16 in BL32 OTF Mode (JESD79-5D Page 140)
+> **图 9**: Figure 43 — Read to Read to Different Bank Group for BL16 in BL32 OTF (JESD79-5D Page 141)
+> **图 10**: Figure 44 — Read to Read to Same Bank Group for BL16 in BL32 OTF (JESD79-5D Page 141)
+> **图 11**: Figure 45 — Read with Auto-Precharge for Fixed BL32 and BL32 in BL32 OTF (JESD79-5D Page 141)
+> **图 12**: Figure 46 — Read with Auto-Precharge for BL16 in BL32 OTF Mode (JESD79-5D Page 142)
+
+---
+
+## 4.7.5 两条命令之间：读和写命令的间隔约束
+
+在此之前，我们一直专注于"单条命令"的时序——RD 命令之后数据什么时候到、什么时候可以 PRE。但在实际的 DDR5 系统中，命令总线上是一条接一条的命令流水线，读和写交替进行。**两条命令之间的最小间隔**由一组专门的参数定义。
+
+### 4.7.5.1 为什么同 BG 和不同 BG 的间隔不同？
+
+这个问题在 [DDR5-Bank架构] 中已经讨论过：同一 Bank Group 内的 Bank 共享 IO 通路，跨 Group 的 Bank 有独立的 IO 通路。命令间隔的差异直接反映这个硬件事实：
+
+**同 BG 内的读写切换**（tCCD_L_RTW、tCCD_L_WTR）比**跨 BG 的读写切换**（tCCD_S_RTW、tCCD_S_WTR）花费更长的时间。Controller 的调度器可以利用这一点：当有 Read 和 Write 命令在队列中等待时，优先把**相邻的 Read 和 Write 发到不同 BG 的 Bank**，从而缩短命令间隔、提高总线利用率。
+
+### 4.7.5.2 Table 44 完整解读
+
+Table 44（JESD79-5D Page 142）列出了 DDR5-3200~9200 通用的最小读写命令间隔。这里有三点值得注意：
+
+**第一，表中有"Same"和"Different"两套参数**。Same 对应同 BG（长间隔），Different 对应跨 BG（短间隔）。这是 BG 架构的直接后果。
+
+**第二，tRTW（Read-to-Write）受多个因素影响**。Note 3 给出了影响因素清单：tDQS2CK 额外需要 1 tCK（因为 Write DQS 需要对齐到 CK）；Read DQS Offset 可以"提前" tRTW（因为 DQS 更早开始，更早结束，更早释放总线）；如果配置了 1.5tCK Postamble，额外需要 1 tCK（Postamble 更长，总线的释放推迟）。CWL = CL - 2 是 DDR5 的常见配置——写延迟比读延迟短 2 tCK。
+
+**第三，WBL 和 RBL 是 CRC 敏感的**（Notes 1-2）。如果 CRC 使能，Burst Length 的计算中要给 CRC 位留出额外的 UI。例如 BL16 在 CRC 使能时 RBL = 18（16 拍数据 + 2 拍 CRC = 18 UI），这会影响 tRTW 中 CWL + WBL/2 + 1 的具体数值。
+
+### 4.7.5.3 Write-to-Read 时序图解读（Figure 47-48）
+
+Figure 47 展示了一次 Write 操作后紧跟一次 Read 操作的场景。时间线上有几个关键节点：
+
+- **ta**：WRITE 命令发出。CWL 开始计时。
+- **ta + CWL + tWPRE**：第一个写数据拍 D0 出现在 DQ 上。DQS 由 Host 驱动。
+- **ta + CWL + tWPRE + WBL/2**：最后一个写数据拍。DQS 开始进入 Postamble。
+- **tWR 的参考点**：最后一个写数据拍之后的**第一个 CK 上升沿**——不是最后一个数据拍本身。Note 3 的原文说"tWR is referenced from the first rising clock edge after the last write data"。
+- **tCCD_L_WTR 之后**：READ 命令发出，随后 DQS 由 DRAM 驱动（读 Preamble）。
+
+一个容易被忽略的细节在 Note 4 中：当 DFE 使能时，DQ 信号必须在第一个写数据 bit 之前保持高电平至少 **4 个 UI**——这是给 DFE 足够的同步时间。如果这个条件不满足，DFE 的 Tap 系数可能无法正确初始化，导致写操作误码。
+
+Figure 48 展示的是 Write with Auto-Precharge → Read with Auto-Precharge 到**同一个 Bank** 的场景。因为两次操作访问同一个 Bank，中间必须经过一次 Precharge——而 Auto-Precharge 不能早于 tWR 开始执行。所以总间隔 = tWR + tRTP = tWTRA。
+
+> **表 4**: Table 44 — Minimum Read and Write Command Timings (JESD79-5D Page 142)
+> **图 13**: Figure 47 — Timing Diagram for Write to Read (JESD79-5D Page 143)
+> **图 14**: Figure 48 — Timing Diagram for Write to Read AutoPrecharge in Same Bank (JESD79-5D Page 143)
+
+---
+
+## 4.7.6 BL32 和 3DS 的特殊命令间隔
+
+### 4.7.6.1 BL32 模式的命令间隔（Tables 45-49）
+
+BL32 模式下（仅 x4 器件），连续命令的间隔与 BL16 有显著差异：
+
+- **同 BG 的 Read→Read**：BL16 in BL32 OTF 使用标准的 tCCD_L（因为你只发了一条 RD）；BL32 in BL32 OTF 需要 **max(16nCK, 5ns)**——两倍于 tCCD_L，因为你需要等完整的 32 拍传完。
+- **跨 BG 的 Read→Read**：BL16 用 tCCD_S（短间隔）；BL32 用 **2×tCCD_S**。
+- **同 BG 的 Write→Write** 是最复杂的：取决于是否是 Partial Write（触发 RMW——Read-Modify-Write）。Table 48 列出了 x8/x16 器件的 BC8 vs BL16 Partial Write vs BL16 非 Partial Write 三种情况的不同间隔约束。Partial Write 需要的 RMW 操作增加了额外的内部读延迟。
+
+### 4.7.6.2 3DS 的特殊性（Table 50）
+
+3DS DDR5 在逻辑 Rank 之间切换时——即同一物理堆叠中不同 Die 之间的命令切换——有专门的 tCCD 参数（带 _slr 和 _dlr 后缀）。这是因为不同 Die 之间的切换延迟可能与同一 Die 内的 Bank 切换延迟不同。具体数值见 Chapter 13 的时序参数表。
+
+> **表 5**: Table 45 — Min Read to Read Timings - Same BG (JESD79-5D Page 144)
+> **表 6**: Table 46 — Min Read to Read Timings - Different BG (JESD79-5D Page 144)
+> **表 7**: Table 47 — Min Write to Write Timings - Same BG (JESD79-5D Page 144)
+> **表 8**: Table 48 — Min Write to Write Same BG Timings, x8/x16 (JESD79-5D Page 144)
+> **表 9**: Table 49 — Min Write to Write Timings - Different BG (JESD79-5D Page 144)
+> **表 10**: Table 50 — Minimum Read and Write Command Timings for x4 3DS (JESD79-5D Page 145)
+
+---
+
+## 4.7.7 回顾与总结
+
+这一节我们从"RD 命令发出后，数据什么时候到"这个最朴素的问题出发，沿着时间线逐步理清了 DDR5 读操作的每一个环节。现在我们回头总结一下整条知识链：
+
+**读操作的核心时间线**：RD 命令经过 RL（= CL 个 tCK）后，DQS 开始输出 Preamble，再经过 tRPRE 后第一个数据拍 D0 出现，BL16/BC8/BL32 规定了数据拍的总数，Postamble 标志着一次 Burst 的结束。
+
+**Precharge 的时机**：tRTP 规定了 RD 到 PRE 的最小间隔，但还必须同时满足 tRAS、tRP、tRC 四条约束链。Auto-Precharge（RDA 命令）把 PRE 嵌入到读命令中——不需要单独发，但时序约束不变。
+
+**PHY 层的时序不确定性**：CK 和 DQS 之间存在偏移（tDQSCK），单个芯片内部的 DQS 沿散布有上限（tDQSCKi）。这些参数是 Read Leveling 训练和 DQS Gate 设计的物理基础。
+
+**BL32 用 Dummy RD 实现双 Prefetch**：16n Prefetch 一次不能喂饱 32 个数据拍，需要通过第二条 Dummy RD 在 8 tCK 后触发第二次 Prefetch。C10 位在第一条和 Dummy RD 之间必须相反。
+
+**命令间隔由 Bank Group 架构决定**：同 BG 慢（共享 IO 通路）、跨 BG 快（独立 IO 通路）。tRTW 受 Read DQS Offset 和 Postamble 长度的影响。
+
+---
+
+**协议原文**: JESD79-5D Section 4.7 (Page 135-145)
+**下一节**: [DDR5-S4.8-写操作] (4.8 Write Operation)
+**关联笔记**: [DDR5-读写时序] | [DDR5-S4.1-命令真值表] | [DDR5-S4.2-突发长度] | [DDR5-S4.4-可编程前导后导]

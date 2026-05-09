@@ -1,0 +1,37 @@
+# 4.38 CRC (Cyclic Redundancy Check)
+
+> **协议原文**: JESD79-5D v1.41, Section 4.38 (Page 283-289)
+> **阅读前提**: [DDR5-S4.36-片上ECC]（ECC 保护存储阵列，CRC 保护传输链路——两层互补）。
+
+---
+
+## 4.38.0 ECC 保护阵列，CRC 保护链路
+
+在 [DDR5-S4.36-片上ECC] 中，我们讨论了 DRAM 内部用 ECC 来纠正在存储阵列中发生的 bit 错误。但 ECC 覆盖不了数据在**传输过程中**的翻转——Controller 把数据放到 DQ 总线上，经过 DIMM PCB 走线、连接器、DRAM 封装到达芯片内部——这整个路径上，噪声、串扰、ISI 都可能导致 bit 翻转。需要一个**链路层**的检错机制——这就是 CRC。
+
+DDR5 在 DDR4 的**写 CRC** 基础上新增了**读 CRC**。两者使用相同的 CRC 多项式——**CRC-8-ATM**（x⁸ + x⁷ + x⁶ + x⁴ + x² + 1，8-bit 校验位）。对于 BL16 = 128-bit 的 Burst 数据，8-bit 的 CRC 是一个合理的选择——足够检测绝大多数传输错误，又不过度占用 Burst 时间。
+
+---
+
+## 4.38.1 写 CRC：Controller 算，DRAM 验
+
+Controller 在 MR5 OP[5] 使能 Write CRC 后，每次写操作计算 128-bit 数据的 CRC-8 → 将 8-bit CRC 附加在 Burst 数据尾部（BL16 = 16 拍数据 + 2 拍 CRC = 18 UI）。DRAM 接收完整 Burst 后，独立计算 CRC-8 → 与收到的 CRC 比较。不匹配 → **ALERT_n 拉低** → Controller 知道这次写操作在传输过程中出错了 → 重写。
+
+---
+
+## 4.38.2 读 CRC：DDR5 的新增保护
+
+Mirror 流程：DRAM 从阵列读出 128-bit → 计算 CRC-8 → 附加在 Burst 后输出。Controller 接收后独立计算 CRC-8 → 比较。MR5 OP[6] 使能 Read CRC。
+
+---
+
+## 4.38.3 CRC 位映射与自动禁用
+
+CRC 位在 DQ 上的物理位置取决于器件宽度（x4/x8/x16）。x8 器件：CRC 附加在 BL16 数据后的额外 2 UI（16+2=18 UI）。Table 中规定了每种位宽下 CRC bit 在 DQ pin 上的具体位置。
+
+如果 CRC 错误率持续低于 **MR51** 的阈值（在 **MR52** 定义的窗口时间内），DRAM 可以请求 Auto-Disable CRC —— 减少传输开销。
+
+---
+
+**协议原文**: JESD79-5D Section 4.38 (Page 283-289)
+**关联笔记**: [DDR5-S4.36-片上ECC] | [DDR5-PHY层]

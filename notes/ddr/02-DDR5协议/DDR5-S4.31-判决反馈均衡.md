@@ -1,0 +1,48 @@
+# 4.31 判决反馈均衡 (Decision Feedback Equalization, DFE)
+
+> **协议原文**: JESD79-5D v1.41, Section 4.31 (Page 263-268)
+> **阅读前提**: [DDR5-DFE均衡]（DFE 的系统级原理——为什么高速下需要判决反馈来消除 ISI）。
+
+---
+
+## 4.31.0 从系统到硬件：DFE 的四个组件
+
+在 [DDR5-DFE均衡] 中，我们从系统层面讨论了 DFE 为什么是 DDR5 高速信号完整性的关键——PCB 传输线上的阻抗不连续点产生反射，前几个 bit 的反射尾峰叠加在当前 bit 上，形成 ISI（码间干扰）。DDR5 的 DFE 用已判决 bit 的历史值去补偿当前的 ISI。本节深入到 DFE 在 DRAM 芯片内部的硬件实现。
+
+### PCB 传输线的脉冲响应：为什么需要 4 个 Tap
+
+当 Host 发送一个孤立的数据脉冲通过 PCB 到达 DRAM，接收端看到的不是干净的矩形脉冲，而是一个"主峰 + 拖尾"的波形。拖尾来自传输线上各阻抗不连续点（DIMM 金手指、过孔、DRAM 封装焊球、分支走线）的部分反射——反射信号在传输线上来回传播，延迟若干个 UI 后再到达接收端，叠加在后续 bit 上。
+
+4 个 Tap 对应补偿前 4 个 UI 的反射残留：Tap-1（最强——紧邻的前一个 bit 的反射）、Tap-2（衰减后的反射）、Tap-3/4（更远的残余）。DDR5-6400 下 1 UI = 156 ps，4 Tap 覆盖了约 0.6 ns 的反射窗口。
+
+---
+
+## 4.31.1 硬件架构：Slicer → Delay Line → DAC → Σ
+
+**Slicer（判决器）**：比较接收波形与 VrefDQ → 输出已判决的数字 bit D[n]。这是 DFE 的"输入"——必须先判决出当前 bit，才能用它的历史值去补偿后续 bit。
+
+**Tap Delay Line**：存储最近 4 个已判决 bit：D[n-1], D[n-2], D[n-3], D[n-4]。移位寄存器结构——每周期推入新 D[n]，推出最老的 D[n-4]。
+
+**DAC + Σ**：每个 Tap 有自己的 6-bit 带符号系数（Sign + Magnitude）。D[n-k] × Tap-k_Bias → 模拟补偿量。4 个补偿量在 Σ 节点求和，反馈回输入端（从 Vin 减去）。补偿后的信号进入 Slicer——形成闭环。
+
+**自适应引擎（LMS）**：根据判决误差自动迭代 Tap 系数。DRAM 内部通常使用 LMS 算法或其简化变体——发送已知训练 Pattern，比较判决值与理想值的偏差，更新系数。收敛需要数千 CK 周期。
+
+---
+
+## 4.31.2 Per-Pin 独立配置
+
+每根 DQ pin 在 PCB 上的走线不同 → 反射特征不同 → 每 pin 需要自己的 DFE 系数。DDR5 为 19 个 pin（DML、DMU、DQL[7:0]、DQU[7:0]）各自分配了 5 个 MR：
+
+- **Gain Bias**（MR112、MR120...）：全局增益
+- **Tap-1~4 Bias**（MR113~MR116、MR121~MR124...）：每个 Tap 独立
+
+每个 Bias 寄存器 = OP[5:0]=Bias值 + OP[6]=符号 + OP[7]=使能。禁用 DFE 只需全部写 0。
+
+训练流程：MR111 使能 → MPR/Loopback 发 Pattern → 自适应收敛 → MRR 读回系数 → BER 验证 → MRW 锁定。温度显著变化时需重训。
+
+> **图 1**: Figure 127 — Components of the DFE (JESD79-5D Page 264)
+
+---
+
+**协议原文**: JESD79-5D Section 4.31 (Page 263-268)
+**关联笔记**: [DDR5-DFE均衡] | [DDR5-ModeRegister] (MR111~MR252) | [DDR5-训练流程]

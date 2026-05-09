@@ -1,0 +1,27 @@
+# 4.25 VrefCS 命令 (VrefCS Command)
+
+> **协议原文**: JESD79-5D v1.41, Section 4.25 (Page 234-235)
+> **阅读前提**: [DDR5-S4.24-VrefCA命令]（VrefCA 和 VrefCS 完全对称）。
+
+---
+
+VrefCS 与 VrefCA 的操作、功能和时序**完全相同**——唯一的区别在于命令编码中的 CA11 位和调整的目标：
+
+| 特性 | VrefCA | VrefCS |
+|------|--------|--------|
+| **CA11** | L | **H** |
+| **调整目标** | CA[13:0] 总线的参考电压 | **CS_n 引脚**的参考电压 |
+| **生效 MR** | MR11 | MR12 |
+| **Multi-Cycle CS** | 支持（MR2 OP[4]=0） | 支持（MR2 OP[4]=0） |
+
+### VrefCS 为什么需要独立于 VrefCA？
+
+CA 总线和 CS_n 虽然在 PCB 上有相似的走线，但它们连接的接收器电路可能不同——CS_n 控制整个命令解码的使能，需要更保守的 Vref 设置以确保在最差条件下也能可靠识别。VrefCS 独立于 VrefCA 使得控制器可以为 CS_n 选择一个不同于 CA 总线的参考电压。
+
+> **表 1**: Table 126 — VrefCS Command Definition (JESD79-5D Page 234)
+> **表 2**: Table 127 — AC Parameters for VrefCS Command (JESD79-5D Page 235)
+
+---
+
+**协议原文**: JESD79-5D Section 4.25 (Page 234-235)
+**关联笔记**: [DDR5-S4.24-VrefCA命令] | [DDR5-S4.27-VrefCS训练规范]

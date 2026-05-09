@@ -1,0 +1,63 @@
+# 4.21 写均衡训练模式 (Write Leveling Training Mode)
+
+> **协议原文**: JESD79-5D v1.41, Section 4.21 (Page 218-229)
+> **网络参考**: [DDR5 Write Leveling详解 (CSDN)](https://blog.csdn.net/Jazel/article/details/155561047)
+> **阅读前提**: [DDR芯片存储原理-完整篇]（Fly-by 拓扑导致 CK 到达各 DRAM 的时间不同）、[DDR5-S4.19-CA训练]（CA 训练完成，命令可以可靠传输）。
+
+---
+
+## 4.21.0 CS 和 CA 都对齐了——但 DQS 还没对齐
+
+CS 训练和 CA 训练解决了**命令**的可靠传输问题。现在 DRAM 能正确识别每一条命令了。但命令只是"控制流"——真正的"数据流"靠 DQS 和 DQ。写操作中，Host 在 CWL 时刻开始驱动 DQS 和 DQ，DRAM 用 DQS 的边沿来采样 DQ。如果 Host 的 DQS 到达 DRAM 时与 DRAM 的 CK 相位关系不对——DQS 的采样沿偏早或偏晚——数据就会被采错。
+
+这个相位偏差的最大来源是 DDR5 使用的 **Fly-by 拓扑**。CK 差分对从 Controller 出来，像一条"项链"依次穿过 DIMM 上的每一颗 DRAM 芯片，最后到达终端电阻。离 Controller 近的芯片先收到 CK，离 Controller 远的芯片后收到——这个"飞行时间差"（flight time skew）在 DDR5-6400 下可以达到几百 ps，比 1 个 UI（156 ps）还长。
+
+而 DQS 是**点对点**的——Controller 到每颗 DRAM 各有一组独立的差分走线，长度精确匹配。所以每颗 DRAM 收到的 DQS 几乎同时到达（skew 极小），但收到的 CK 时间不同。矛盾就在这里：**需要让 DQS 对齐到 CK——而 CK 在不同 DRAM 芯片上的到达时间不同**。Write Leveling 就是为每颗 DRAM 芯片分别找到这个"对齐点"。
+
+---
+
+## 4.21.1 基本原理：用 DQS 去"看"CK 在哪里
+
+Write Leveling 的核心思想很优雅：让 DRAM 进入一个特殊的"Write Leveling 模式"——在此模式下，DRAM 内部产生一个与 CK 上升沿对齐的**内部脉冲**（Write Leveling Pulse）。Controller 不断发送 DQS 脉冲——DRAM 用 DQS 的边沿去采样这个内部脉冲的值，通过 DQ 线反馈给 Controller。
+
+具体来说：如果 DQS 的采样沿到达时内部脉冲还没到（DQS 太早了）→ DQ 反馈 = 0；如果 DQS 采样时内部脉冲已经高了（DQS 超过了脉冲）→ DQ 反馈 = 1。Controller 根据 DQ 反馈调整 DQS 的延迟（往左移或往右移），用**二分法搜索**找到 DQ 从 0→1 的跳变点——这个点就是"此时 DQS 刚好对齐了 CK"的位置。
+
+---
+
+## 4.21.2 阶段一：外部 Write Leveling——补偿 PCB 级 skew
+
+外部 Write Leveling 的完整流程是：
+
+1. **初始化 DQS**：DQS_t = LOW, DQS_c = HIGH（差分对的静态状态）
+2. **使能 Write Leveling 模式**：MR3 OP[3] = 1。等待 tWLPEN（≥ 15 ns）——这是 DRAM 切换到 WL 模式所需的内部配置时间
+3. **发 WRITE 命令**：Controller 发出 WRITE 命令。DRAM 在收到这个命令后，内部产生一个与 CK 上升沿对齐的 Write Leveling Pulse
+4. **发 DQS 脉冲**：Controller toggle DQS——DRAM 用 DQS 的边沿去采样内部脉冲。采样值通过 DQ 反馈
+5. **二分法搜索**：如果 DQ = 0 → DQS 太早 → 增大 DQS 延迟。如果 DQ = 1 → 找到了 pass 区域。继续往右扫直到 DQ 再次变 0（pass 的右边界）。中心 = (左边界 + 右边界) / 2
+6. **锁定延迟**：将 DQS 延迟设为中心值
+7. **退出**：MR3 OP[3] = 0，等待 tWLO（Write Leveling Output 时间）
+
+**DDR5 的 Per-Nibble 改进**：x16 器件有两个独立的 Nibble——Lower（DQ[7:0], DQSL）和 Upper（DQ[15:8], DQSU）。每个 Nibble 的 DQS 走线长度可能不同（在 PCB 上的物理位置不同），所以需要**独立的 Write Leveling**。x8 器件只有一个 Nibble，只需一次训练。
+
+---
+
+## 4.21.3 阶段二：内部 Write Leveling——子 tCK 级别的微调
+
+外部 Write Leveling 对齐到的是"1 tCK"的量级——DQS 的前沿大致对齐了 CK。但在 DDR5-6400 下，1 tCK = 313 ps，这个精度是不够的——还需要做子 tCK 级别的微调。内部 Write Leveling 利用 MR3 的可编程脉冲延迟来进一步缩小这个精度：
+
+1. 从外部 Write Leveling 的对齐位置（DQ=1）开始，将 DQS **左移 WL_ADJ_start**（例如 Write Preamble=2 时左移 0.75 tCK）。移动后 DQ 应该回到 0
+2. 通过 MRW 写 MR3 来逐步延迟 DRAM 内部的 Write Leveling Pulse，直到 DQ 重新变为 1
+3. 继续细调 DQS 左移，直到 DQ 再次回到 0——这时 DQS 和内部脉冲在亚 tCK 级别精确对齐
+4. 将 DQS **右移 WL_ADJ_end**（例如 +1.25 tCK）到最终最优采样位置
+
+**MR7 OP[0]** 控制内部 Write Leveling 的 0.5 tCK 偏移——这是一个用于最精细调校的附加偏移位。
+
+两阶段训练完成后，Write Latency 完全确定。后续的 Write DQ-DQS Deskew 只需要按 bit 微调延迟——不再需要调整 WL 本身。
+
+> **图 1**: Figure 92 — External Write Leveling Training Operation (JESD79-5D Page 220)
+> **图 2**: Figure 93 — Write Leveling Internal Cycle Alignment (JESD79-5D Page 222)
+> **表 1**: Write Leveling Mode Registers (JESD79-5D Page 219)
+
+---
+
+**协议原文**: JESD79-5D Section 4.21 (Page 218-229)
+**关联笔记**: [DDR5-训练流程] | [DDR5-S4.19-CA训练] | [DDR5-ModeRegister] (MR3/MR7)
