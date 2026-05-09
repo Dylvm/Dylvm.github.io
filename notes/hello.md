@@ -1,10 +1,56 @@
 # 示例笔记
 
-这是你的第一个笔记。在 `notes/` 文件夹中编写 Markdown 笔记，内容准备好后可以发布到博客。
+这是我的第一个笔记。在 `notes/` 文件夹中编写 Markdown 笔记，内容准备好后可以发布到博客。
+
+## 如何在笔记中插入图片
+
+### 方式一：引用网络图片（推荐，最简单）
+
+直接使用图片 URL，适合 Unsplash、Pexels 等免费图库：
+
+![编程办公桌](https://images.unsplash.com/photo-1498050108023-c5249f4df085?w=800)
+
+*图片说明：Photo by [Christopher Gower](https://unsplash.com/@cgower) on Unsplash*
+
+> 使用 Unsplash 图片时，在文章末尾附上出处即合规。
+
+### 方式二：使用本地图片
+
+如果图片在本地，放在与笔记同名文件夹中，用相对路径引用：
+
+![我的头像](../blog/source/images/avatar.svg)
+
+> 本地图片需要复制到 `blog/source/images/` 目录下，然后在笔记中用 `/images/文件名` 引用。
+
+### Markdown 图片语法
+
+```markdown
+![替代文字](图片URL或路径)
+```
+
+| 场景 | 写法 | 说明 |
+|---|---|---|
+| 网络图片 | `![描述](https://example.com/pic.jpg)` | 直接贴 URL 即可，无需管理文件 |
+| 本地图片 | `![描述](/images/my-pic.png)` | 图片放 `blog/source/images/`，用绝对路径引用 |
+| 带标题 | 加一行 `*斜体说明*` | 图片下方添加说明文字 |
 
 ## 发布流程
 
-1. 在 `notes/` 中写作
-2. 准备好后，复制到 `blog/source/_posts/`
-3. 在 `blog/` 中运行 `hexo server` 预览
-4. 提交并推送到 GitHub
+1. 在 `notes/` 中写作（含图片）
+2. 如果有本地图片，放入 `blog/source/images/` 中
+3. 将笔记复制到 `blog/source/_posts/`，按 `YYYY-MM-DD-标题.md` 命名
+4. 在 `blog/` 中运行 `hexo server` 预览，确认图片正确显示
+5. 提交并推送到 GitHub
+
+## 代码块示例
+
+博客支持语法高亮的代码块：
+
+```python
+def hello():
+    print("Hello, World!")
+```
+
+```bash
+hexo new post "我的新文章"
+```
