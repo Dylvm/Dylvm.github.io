@@ -29,7 +29,7 @@ custom_file_path:
   #bodyEnd: source/_data/body-end.njk
   #variable: source/_data/variables.styl
   #mixin: source/_data/mixins.styl
-  #style: source/_data/styles.styl
+  style: source/_data/styles.styl
 
 
 # ---------------------------------------------------------------
@@ -103,7 +103,10 @@ open_graph:
 # External url should start with http:// or https://
 menu:
   home: / || fa fa-home
-  笔记: /categories/笔记/ || fa fa-book
+  笔记:
+    default: /categories/笔记/ || fa fa-book
+    SDRAM基础: DDR/SDRAM基础/ || fa fa-database
+    DDR5协议: DDR/DDR5协议/ || fa fa-microchip
   about: /about/ || fa fa-user
   archives: /archives/ || fa fa-archive
   legal: /legal/ || fa fa-gavel
