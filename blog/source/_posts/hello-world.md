@@ -1,6 +1,8 @@
 ---
 title: Hello, World
 date: 2026-05-09 23:00:00
+categories:
+  - 笔记
 tags:
   - meta
 ---
