@@ -106,6 +106,7 @@ menu:
   笔记:
     default: /categories/笔记/ || fa fa-book
     DDR基础: DDR/DDR基础/ || fa fa-database
+    DDR5协议: DDR/DDR5协议/ || fa fa-microchip
   about: /about/ || fa fa-user
   archives: /archives/ || fa fa-archive
   legal: /legal/ || fa fa-gavel

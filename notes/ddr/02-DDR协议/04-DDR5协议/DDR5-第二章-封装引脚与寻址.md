@@ -1,0 +1,244 @@
+# 第二章 DDR5 SDRAM 封装、引脚定义与寻址
+
+> **协议原文**: JESD79-5D, Section 2
+
+---
+
+## 2.1-2.5 封装概要
+
+DDR5 使用 **MO-210 BGA 封装**，0.80mm 焊球间距。x4/x8 为 13 行 × 6 列电气焊球，x16 为 16 行 × 6 列。x4 只有 DQ[3:0] 且不支持 DM/TDQS；x8 有 DQ[7:0] + DM_n/TDQS_t 复用；x16 分两组对称 Nibble（Lower: DQL[7:0]+DQSL_t/c+DML_n, Upper: DQU[7:0]+DQSU_t/c+DMU_n）。SDP/3DS 封装的 TEN 焊球在 DDP 中被复用为 CS1_n；CAI 在 DDP 中接地不可用，焊球复用为 Top Die 的 ZQ1。完整的焊球位置表见 Table 1-2（JESD79-5D Page 3-4），下面直接进入引脚功能和寻址部分。
+
+![Table 1 — x4/x8 Ballout](picture/table-x4x8-ballout.png)
+> **图 1**: Table 1 — x4/x8 Ballout (JESD79-5D Page 3)
+
+![Table 2 — x16 Ballout](picture/table-x16-ballout.png)
+> **图 2**: Table 2 — x16 Ballout (JESD79-5D Page 4)
+
+---
+
+## 2.6 引脚功能描述（Table 3 完整翻译与解读）
+
+Table 3 是第二章的核心——它定义了 DDR5 芯片**每一个引脚的电气功能、方向和关键约束**。下面逐类解读。
+
+### 2.6.1 时钟信号
+
+![CK差分时钟](picture/pin-clock.png)
+
+**CK_t, CK_c（差分时钟，Input）**
+
+所有地址和控制信号（CA[13:0], CS_n, ODT, CKE）在 **CK_t 上升沿与 CK_c 下降沿的交叉点**被采样。CK 必须始终运行——Power-Down 期间不能停，只有 Self Refresh 期间可以停止。DDR5-3200 下 CK = 1600 MHz，DDR5-6400 下 CK = 3200 MHz。
+
+### 2.6.2 芯片选择
+
+![CS_n芯片选择](picture/pin-cs.png)
+
+**CS_n（Chip Select，Input）——还可复用为 CS1_n（DDP 封装下选择 Rank 1）**
+
+CS_n 是命令系统的"总开关"。**CS_n = H 时所有命令被屏蔽**——DRAM 忽略 CA 总线。CS_n = L 时命令有效。多 Rank 系统中，Controller 通过拉低不同 Rank 的 CS_n 来选择通信对象。DDR5 废除 CKE 引脚后，CS_n 也接管了 Power-Down 进出控制。
+
+### 2.6.3 数据掩码
+
+![DM_n数据掩码](picture/pin-dm.png)
+
+**DM_n / DMU_n / DML_n（Data Mask，Input）**
+
+DDR5 的 DM 是**独立引脚**（与 DDR4 中 DM/DBI 共用不同，也与 DDR5 中 DBI 无专用引脚不同）。协议原文："Input data is masked when DM_n is sampled LOW."
+
+- **DM = L → 屏蔽该数据拍**（不写入 SA）
+- **DM = H → 正常写入**
+
+DM_n 在 DQS 双沿均被采样——Burst 的每一位与 DQ 的对应位一一配对。x8 器件由 **MR5 OP[5] = 1** 使能。**x4 器件不支持 DM**。x16 器件有独立的 DMU_n（Upper Nibble）和 DML_n（Lower Nibble）。
+
+### 2.6.4 命令地址总线
+
+![CA命令地址总线](picture/pin-ca.png)
+
+**CA[13:0]（Command/Address，Input）**
+
+14 根命令地址输入。命令和地址统一编码在 CA[13:0] 上，依照命令真值表中的编码规则。Table 3 特别提醒：**"Since some commands are Multi-Cycle, the pins may not be interchanged between devices on the same bus"**——2-Cycle 命令要求 CA 引脚在总线上的位置固定，不能为了 PCB 布线方便而任意交换。CA 在 CK 上升沿被锁存。
+
+### 2.6.5 异步复位
+
+![RESET_n异步复位](picture/pin-reset.png)
+
+**RESET_n（Active Low Asynchronous Reset，Input）**
+
+RESET_n = L → DRAM 进入复位（异步，不依赖 CK）。RESET_n = H → 正常操作。CMOS 轨至轨信号——DC 高电平 ≥ 80% VDDQ，低电平 ≤ 20% VDDQ。
+
+### 2.6.6 数据 I/O
+
+![DQ数据I/O](picture/pin-dq.png)
+
+**DQ（Data Input/Output，双向）**
+
+双向数据总线。x4: DQ[3:0]，x8: DQ[7:0]，x16: DQL[7:0] + DQU[7:0]。CRC 使能时，CRC 校验位附加在 Data Burst 末尾。
+
+### 2.6.7 数据选通
+
+![DQS数据选通](picture/pin-dqs.png)
+
+**DQS_t/c, DQSU_t/c, DQSL_t/c（Data Strobe，双向）**
+
+DQS 是 DDR5 最核心的源同步信号。**读时由 DRAM 驱动**（边沿对齐数据），**写时由 Host 驱动**（数据中心对齐数据——DRAM 内部再将 DQS 延迟 90° 对齐边沿）。x16 器件有两组独立的 DQS：DQSL_t/c 对应 DQL[7:0]，DQSU_t/c 对应 DQU[7:0]。**DDR5 仅支持差分 DQS**——不支持单端模式（DDR4 低速档允许单端）。
+
+### 2.6.8 终端数据选通
+
+![TDQS终端数据选通](picture/pin-tdqs.png)
+
+**TDQS_t, TDQS_c（Termination Data Strobe，Output）**
+
+仅适用 x8 器件。**MR5 OP[4] = 1** 使能时，DRAM 在 TDQS_t/c 上提供与 DQS_t/c 相同的终端阻抗。**MR5 OP[4] = 0** 禁用时，**DM_n/TDQS_t 共享物理焊球**提供 Data Mask（取决于 MR5 OP[5]），TDQS_c 不连接。x4/x16 必须将 MR5 OP[4] 设为 0。TDQS 的物理意义：多 Rank 系统中闲置 Rank 的 DQS 引脚通过 TDQS 打开终端，吸收 DQS 总线反射。
+
+### 2.6.9 告警信号
+
+![ALERT_n告警信号](picture/pin-alert.png)
+
+**ALERT_n（Alert，双向——正常为 Output，CT Mode 为 Input）**
+
+CRC 错误（写校验失败）或 CA Parity 错误时，ALERT_n 拉低脉冲（≥ 2 CK），然后自动恢复。Connectivity Test Mode 中反转方向为 input。如果系统不用 ALERT_n，PCB 上必须**上拉至 VDDQ**。
+
+### 2.6.10 测试使能
+
+![TEN测试使能](picture/pin-ten.png)
+
+**TEN（Test Enable，Input）——DDP 封装中为 CS1_n**
+
+x4/x8/x16 器件**必须支持**。TEN = H → 进入 Connectivity Test Mode，DRAM 正常功能完全旁路。TEN 内部有弱下拉到 VSS。在 DDP（双芯片）封装中该焊球复用为 **CS1_n**（Rank 1 的 Chip Select）——DDP 不支持 TEN。
+
+### 2.6.11 配置 Strap 信号
+
+以下三个引脚不是运行时动态翻转的控制信号——它们是 PCB 设计阶段通过**固定上拉或下拉**来配置硬件选项的 Strap 信号：
+
+![MIR镜像Strap](picture/strap-mir.png)
+![CAI_CA_ODT配置Strap](picture/strap-cai-caodt.png)
+
+**MIR（Mirror，Input）**
+- 接 **VDDQ** → **Mirrored Mode**（CA[2]↔CA[3], CA[4]↔CA[5] 等偶数-奇数对内部互换）。用于 DIMM 正反两面布局时简化 PCB 走线——两面的 DRAM 使用镜像模式后 CA 走线可以不交叉。
+- 接 **VSS** → 标准模式（无镜像）。
+
+**CAI（Command & Address Inversion，Input）**
+- 接 **VDDQ** → DRAM 内部**反转所有 CA 信号的逻辑电平**。用于 DIMM 上通过 Register 芯片后 CA 极性可能反转的场景。
+- 接 **VSS** → 不反转。
+
+**CA_ODT（CA ODT Control，Input）**
+- 接 **VSS** → 应用 **Group A** CA ODT 设置
+- 接 **VDDQ** → 应用 **Group B** CA ODT 设置
+
+两组预设值允许 DIMM 上不同位置的 DRAM（近端 vs 远端）用硬件 Strap 而非 MR 来选不同的 CA ODT。详见 [DDR5-S4.40-CA_ODT配置]。
+
+### 2.6.12 Loopback 专用引脚
+
+![LBDQ_LBDQS回环](picture/pin-loopback.png)
+
+**LBDQ（Loopback Data Output，Output）** 和 **LBDQS（Loopback Data Strobe，Output）**
+
+专用于 Loopback 模式。Loopback 使能时 LBDQ 驱动输出数据，LBDQS 提供单端 Strobe（上升沿边沿对齐，下降沿中心对齐）。Loopback 禁用时由 MR36 OP[2:0] 控制端接或高阻。
+
+### 2.6.13 电源引脚
+
+| 电源 | 电压 | 用途 |
+|------|------|------|
+| **VDD** | 1.1V | 核心逻辑（CA 解码器、Decoder、DLL） |
+| **VDDQ** | 1.1V | DQ/DQS I/O 供电 |
+| **VSS** | 0V | 地 |
+| **VPP** | 1.8V | **DRAM 激活电源**——Word Line 升压驱动 |
+
+VPP 是 DDR5 新增的独立电源域（DDR4 内部升压，不需外部 VPP）。用途：驱动 Word Line 打开时需要比 VDD 更高的电压来克服 NMOS Access Transistor 的阈值损失。在 DIMM 上由 PMIC 统一管理（[DDR5-PMIC]）。
+
+### 2.6.14 ZQ 校准基准
+
+**ZQ / ZQ1（Reference）**
+
+ZQ 引脚连接 **240Ω ±1%** 外部精密电阻到 VSS——这是 DDR5 系统中最精密的元件。ZQ 校准将内部阻抗与这个外部基准比较来校准 Ron 和 RTT。DDP 封装中 ZQ1 专为 Top Die 服务（Bottom Die 用 ZQ）。
+
+---
+
+## 2.7 DDR5 SDRAM 寻址（Addressing）
+
+Tables 4-8 定义了不同密度 DDR5 芯片的地址空间分配。这些表格决定了命令真值表中 BG[2:0]、BA[1:0]、R[17:0]、C[10:0] 这些字段的**实际有效范围**——哪些 bit 真正有意义，哪些是 Don't Care。
+
+### 2.7.1 举例：Table 5 — 16 Gb x8 完整拆解
+
+![Table 5 — DDR5寻址表](picture/table-addressing.png)
+
+> **表 1**: Tables 5 — DDR5 Addressing Tables
+
+我们以 **16 Gb x8** 为例——这是 FPGA 应用中最常见的 DDR5 配置。Table 5 中这一行的每个字段都对应了一个具体的硬件结构：
+
+```
+配置: 16 Gb x8
+BG 地址: BG0~BG2 (3-bit → 8 个 Bank Group)
+BA:      BA0~BA1 (2-bit → 每个 BG 内 4 个 Bank)
+Row:     R0~R16  (17-bit → 每个 Bank 内 131,072 行)
+Column:  C0~C9   (10-bit → 每行 1,024 列)
+Page Size: 1KB   (1024 列 × 8-bit = 8,192-bit = 1,024 Bytes)
+CID:     CID0~3  (4-bit → 支持最多 16 层 3DS 堆叠)
+```
+
+现在逐维度深入理解每个字段。
+
+#### BG[2:0] — 选择 8 个 Bank Group 中的一个
+
+3-bit 的 BG 地址意味着芯片内部有 2^3 = **8 个 Bank Group**。在 DDR5 的命令真值表中，ACT、READ、WRITE 等命令的第 1 周期 CA[10:8] 承载的就是这三位。Controller 每发一条命令，必须明确指定目标 BG。
+
+为什么 DDR5 需要 Bank Group？因为 8 个 BG 各有独立的 I/O 通路——跨 BG 的 Bank 切换比同 BG 内的 Bank 切换**更快**（tCCD_S < tCCD_L）。Controller 调度器可以利用这一点：优先把背靠背命令发到不同 BG 的 Bank。
+
+**x16 器件的特殊限制**：x16 DDR5 只有 4 个 BG（BG[1:0]，2-bit）。原因很直接——x16 的 DQ 是 16 根，是 x8 的两倍，I/O 面积更大。为控制芯片总面积，削减了一半的 BG 数量。x16 DDR5 的总 Bank 数 = 4 BG × 4 Bank = 16（vs x8 的 32）。
+
+#### BA[1:0] — 在选定 BG 内选择 1 个 Bank
+
+2-bit 的 BA 地址意味着每个 BG 内有 2^2 = **4 个 Bank**。加上 BG —— DDR5 x8 的总 Bank 数为 **8 BG × 4 Bank = 32 Banks**。这比 DDR4 的最高 16 Banks（4 BG × 4 Bank）翻了一倍。
+
+32 个 Bank 每个都能独立操作：Bank 0 正在 ACT，Bank 1 正在 READ，Bank 2 正在 PRE……Controller 通过 Bank 交错将等待时间隐藏在并行操作背后。
+
+**注意低密度例外**：8 Gb x8 的 Table 4 中，每个 BG 只有 **2 个 Bank**（BA0 单 bit）——总共 8 × 2 = 16 Banks。这是因为 8 Gb 的 Row 数量少，用更少的 Bank 足以管理。
+
+#### R[16:0] — 选择 Bank 内的某一行
+
+17-bit 的 Row 地址意味着每个 Bank 内有 2^17 = **131,072 行**。这是 16 Gb 密度的核心——比 8 Gb（R[15:0] = 16-bit = 65,536 行）**翻了一倍**。
+
+ACT 命令将这 131,072 行中的一行打开——整行数据（1 KB）进入 SA 阵列。**Row 数量的增长是 DRAM 密度提升的主要驱动力**：从 8 Gb → 16 Gb → 32 Gb → 64 Gb，每翻一倍，Row 地址就增加 1 bit。而 Column 数量和 Bank 数量基本不变——增加列需要增加 SA（面积成本大），增加行只需要更宽的 Row Decoder（面积成本小）。
+
+64 Gb 的 Table 8 中，Row 地址达到 R[17:0]（18-bit = 262,144 行）。这是 DDR5 当前标准的最高密度。
+
+#### C[9:0] — 选择行内的起始列
+
+10-bit 的列地址意味着每行有 2^10 = **1,024 列**。x8 器件下，每列是 8-bit 宽 → 每行 = 1024 × 8-bit = 8,192-bit = **1,024 Bytes = 1 KB**。这就是一次 ACT 命令打开的**最小数据量**——不管 Controller 实际只需要 8 Bytes 还是 16 Bytes，ACT 命令都会把整个 1 KB 加载到 SA 中。
+
+**x4 器件的列空间更大**：x4 用 C[10:0]（11-bit = 2,048 列），因为 BL32 模式需要翻倍的列空间来维持与 x8 BL16 相同的吞吐量（32 拍 × 4b = 128b = 16 拍 × 8b）。
+
+**Column 地址与 Burst Length 的关系**：BL16 模式下，一次 READ 输出 16 个 8-bit 数据拍 = 128-bit。这 128-bit 来自连续 16 列。C[3:0] 决定了 Burst Order 的起始位置（以 4 拍为一组做 Wrap-Around），C[9:4] 决定了从哪一组 16 列开始。这就是 Burst Order（Table 32）中 C[3:2] 控制轮转规则的物理基础。
+
+#### CID[3:0] — 选择 3DS 堆叠中的哪一层
+
+4-bit CID 表示这颗芯片支持最多 2^4 = **16 层堆叠**（16H）。在 3D Stacked 封装中，多层 DRAM Die 通过 TSV 垂直堆叠——CID 就是用来选择"第几层"的。对于普通的单片封装（SDP）：CID 为 V（Don't Care），DRAM 忽略这些位。
+
+64 Gb 密度下堆叠高度降到 **8H**（CID[2:0]）——物理上 64 Gb 的单 Die 已经很大，堆叠 16 层在热和信号完整性上都不现实。
+
+### 2.7.2 各密度完整对比
+
+| 配置 | BG | BA | Total Bk | Row 地址 | 有效 Row/Bk | Col (x8) | Page Size | CID | 备注 |
+|------|-----|-----|---------|---------|-----------|---------|-----------|-----|------|
+| 8 Gb x8 | 8 | 2 | 16 | R0~R15 | 8,192 | C0~C9 | 1KB | 4-bit/16H | 每 BG 仅 2 Bank |
+| **16 Gb x8** | **8** | **4** | **32** | **R0~R16** | **65,536** | **C0~C9** | **1KB** | **4-bit/16H** | **R16=0，FPGA 最常用** |
+| 24 Gb x8 | 8 | 4 | 32 | R0~R16* | — | C0~C9 | 1KB | 4-bit/16H | 非二进制，1/4 空间无效 |
+| 32 Gb x8 | 8 | 4 | 32 | R0~R16 | 131,072 | C0~C9 | 1KB | 4-bit/16H | R16 全用 |
+| 64 Gb x8 | 8 | 4 | 32 | R0~R17 | 131,072 | C0~C9 | 1KB | 3-bit/8H | R17 全用，堆叠降为 8H |
+
+**核心规律**：
+- **BG 和 Bank 数量**在 ≥16 Gb 后稳定为 8×4=32，不再增长——这是面积与并行度的最优平衡
+- **Row 位宽是密度的主要驱动力**——每代翻倍就加 1 bit（R15→R16→R17）
+- **Column 位宽近乎不变**——1024 列是 SA 面积和 Bandwidth 的最优平衡
+- **Page Size** 固定 1KB（x8）或 2KB（x16）——ACT 的"最小浪费量"
+
+### 2.7.3 非二进制密度的特殊约束
+
+Table 6（24 Gb）Note 1："For non-binary memory densities, a quarter of the row address space is invalid. When the MSB address bit is 'HIGH', the MSB-1 address bit shall be 'LOW'."
+
+非二进制密度（6/12/24/48 Gb）的 Row 地址中 **1/4 空间不可用**。约束规则：当 Row 地址最高位（MSB）= 1 时，次高位（MSB-1）必须 = 0（即不允许 "11" 组合）。ACT 到非法地址后读写行为与合法地址一致但数据不可预测。实际有效 Row = (3/4) × 2^(Row bits)。
+
+### 2.7.4 CID 与 3DS 堆叠
+
+**CID[3:0]** 是 4-bit 芯片 ID——在 3DS（3D Stacked）封装中用于选择堆叠中的哪一层 Die。单片封装下 CID 为 V（Don't Care）。最大堆叠高度：8~32Gb 为 16H（全 CID[3:0]），64Gb 为 8H（CID[2:0]）。
+
+---
