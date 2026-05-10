@@ -18,8 +18,7 @@ date: 2026-05-10 00:00:00
 
 | 分类 | 说明 |
 |---|---|
-| [DDR / SDRAM基础](/categories/笔记/DDR/SDRAM基础/) | DRAM 芯片存储原理，从电容到阵列 |
-| [DDR / DDR5协议](/categories/笔记/DDR/DDR5协议/) | JESD79-5D 协议详解，命令、时序、训练 |
+| [DDR / DDR基础](/categories/笔记/DDR/DDR基础/) | DRAM 存储原理——从电容到阵列、SA与读写、时序参数、Prefetch演进、层级架构 |
 
 ## 关于本站
 

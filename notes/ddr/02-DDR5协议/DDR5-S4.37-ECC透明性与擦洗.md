@@ -1,8 +1,0 @@
-# 4.37 ECC 透明性与错误擦洗 (ECC Transparency and Error Scrub)
-
-> **协议原文**: JESD79-5D v1.41, Section 4.37 (Page 279-282)
-> 本节内容已合并至 [DDR5-S4.36-片上ECC] 的 ECS 章节中。请参阅该文档的 §4.37 部分。
-
----
-
-**关联笔记**: [DDR5-S4.36-片上ECC]
